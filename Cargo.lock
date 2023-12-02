@@ -2082,6 +2082,7 @@ dependencies = [
 name = "mvg_dioxus"
 version = "0.1.0"
 dependencies = [
+ "cfg-if",
  "chrono",
  "dioxus",
  "dioxus-desktop",

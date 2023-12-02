@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
 use std::error::Error;
 
@@ -6,9 +6,10 @@ use chrono::{DateTime, Duration};
 
 use chrono::prelude::*;
 use dioxus::prelude::*;
+use itertools::Itertools;
 use serde::Deserialize;
 
-const OBERSCHLEISSHEIM_URL: &str = "https://www.mvg.de/api/fib/v2/departure?globalId=de:09184:2000&limit=10&offsetInMinutes=0&transportTypes=SBAHN";
+const OBERSCHLEISSHEIM_URL: &str = "https://www.mvg.de/api/fib/v2/departure?globalId=de:09184:2000&limit=14&offsetInMinutes=0&transportTypes=SBAHN,BUS,UBAHN,TRAM";
 
 enum TransportType {
     Sbahn,
@@ -20,7 +21,7 @@ struct RawDeparture {
     #[serde(rename = "plannedDepartureTime")]
     planned_departure_time_ms: u64,
     #[serde(rename = "realtime")]
-    real_time: bool,
+    is_real_time: bool,
     #[serde(rename = "delayInMinutes", default)]
     delay_minutes: u16,
     #[serde(rename = "realtimeDepartureTime")]
@@ -43,32 +44,58 @@ struct RawDeparture {
 
 #[derive(PartialEq)]
 struct Departure {
-    planned: DateTime<Local>,
-    delay: Duration,
+    actual_time: DateTime<Local>,
+    planned_time: DateTime<Local>,
+    delay: Option<Duration>,
     destination: String,
     cancelled: bool,
+    vehicle_label: String,
+}
+
+impl Departure {
+    fn displayed_time(&self) -> &DateTime<Local> {
+        if self.cancelled {
+            &self.planned_time
+        } else {
+            &self.actual_time
+        }
+    }
 }
 
 impl From<RawDeparture> for Departure {
     fn from(value: RawDeparture) -> Self {
-        let planned = Local
+        let actual_time = Local
+            .timestamp_millis_opt(value.real_departure_time_ms as i64)
+            .unwrap();
+        let planned_time = Local
             .timestamp_millis_opt(value.planned_departure_time_ms as i64)
             .unwrap();
-        let delay = Duration::minutes(value.delay_minutes as i64);
+        let delay = value
+            .is_real_time
+            .then(|| Duration::minutes(value.delay_minutes as i64));
         Departure {
-            planned,
+            actual_time,
+            planned_time,
             delay,
             destination: value.destination,
             cancelled: value.cancelled,
+            vehicle_label: value.vehicle_label,
         }
     }
 }
 
 #[inline_props]
 fn ResponseTile<'a>(cx: Scope, departure: &'a Departure) -> Element {
-    let planned = departure.planned.format("%H:%M");
-    let delay = departure.delay.num_minutes();
-    let inner = rsx!("[{departure.destination}] {planned}: +{delay}");
+    let displayed_time = departure.displayed_time().format("%H:%M");
+    let time_info = if let Some(delay) = &departure.delay {
+        rsx!("{displayed_time} (+ {delay.num_minutes()})")
+    } else if !departure.cancelled {
+        rsx!(i {"{displayed_time}"})
+    } else {
+        rsx!("{displayed_time}")
+    };
+    let inner =
+        rsx!(time_info, " [", b {"{departure.vehicle_label}"}, " {departure.destination}] ");
     cx.render(rsx!(
         div {
             if departure.cancelled {
@@ -87,6 +114,7 @@ async fn get_response() -> Result<Vec<Departure>, Box<dyn Error>> {
         .await?
         .into_iter()
         .map(Departure::from)
+        .sorted_by(|dep1, dep2| dep1.displayed_time().cmp(dep2.displayed_time()))
         .collect::<Vec<_>>())
 }
 
